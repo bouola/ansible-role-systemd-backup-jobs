@@ -136,9 +136,10 @@
           - _systemd_backup_jobs_collector_write.rc != 0
         fail_msg: "The output group grants the wrong access to the collector account."
 
-    - name: "Verify published outputs with the runner"
+    # Only the output published just above: outputs of other jobs may come from an earlier verify run.
+    - name: "Verify host-copy output with the runner"
       ansible.builtin.command:
-        cmd: "{{ systemd_backup_jobs_bin_path }} verify {{ systemd_backup_jobs_output_dir }} --max-age 1h"
+        cmd: "{{ systemd_backup_jobs_bin_path }} verify {{ systemd_backup_jobs_output_dir }}/host-copy --max-age 1h"
       changed_when: false
 
     - name: "Read host-copy metrics"
@@ -152,6 +153,12 @@
           - "'systemd_backup_job_last_status{job=\"host-copy\"} 1' in _systemd_backup_jobs_host_copy_metrics.content | b64decode"
           - "'systemd_backup_job_last_success_timestamp_seconds{job=\"host-copy\"}' in _systemd_backup_jobs_host_copy_metrics.content | b64decode"
         fail_msg: "host-copy metrics do not report a successful run."
+
+    # Remove the failure trigger left by an earlier verify run, so the first run succeeds.
+    - name: "Make host-flaky succeed"
+      ansible.builtin.file:
+        path: "/srv/molecule-fail"
+        state: absent
 
     - name: "Run host-flaky job once successfully"
       ansible.builtin.systemd:
