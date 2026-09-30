@@ -1,0 +1,39 @@
+---
+- name: "Install job definitions"
+  ansible.builtin.template:
+    src: "job.json.j2"
+    dest: "{{ systemd_backup_jobs_config_dir }}/jobs/{{ _systemd_backup_jobs_job.name }}.json"
+    owner: "root"
+    group: "root"
+    mode: "0600"
+  loop: "{{ _systemd_backup_jobs_enabled_jobs }}"
+  loop_control:
+    loop_var: _systemd_backup_jobs_job
+    label: "{{ _systemd_backup_jobs_job.name }}"
+
+- name: "Install job timers"
+  ansible.builtin.template:
+    src: "systemd-backup-jobs@.timer.j2"
+    dest: "{{ systemd_backup_jobs_systemd_dir }}/systemd-backup-jobs@{{ _systemd_backup_jobs_job.name }}.timer"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  loop: "{{ _systemd_backup_jobs_enabled_jobs }}"
+  loop_control:
+    loop_var: _systemd_backup_jobs_job
+    label: "{{ _systemd_backup_jobs_job.name }}"
+  notify: "Reload systemd"
+
+- name: "Flush systemd reload handler"
+  ansible.builtin.meta: flush_handlers
+
+# Starting a timer schedules the job; it does not run the backup now.
+- name: "Enable and start job timers"
+  ansible.builtin.systemd:
+    name: "systemd-backup-jobs@{{ _systemd_backup_jobs_job.name }}.timer"
+    enabled: true
+    state: started
+  loop: "{{ _systemd_backup_jobs_enabled_jobs }}"
+  loop_control:
+    loop_var: _systemd_backup_jobs_job
+    label: "{{ _systemd_backup_jobs_job.name }}"

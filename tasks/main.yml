@@ -1,0 +1,49 @@
+---
+# Every task file uses the enabled job list, so it is built whatever tags are selected.
+- name: "Build enabled job list"
+  ansible.builtin.set_fact:
+    _systemd_backup_jobs_enabled_jobs: >-
+      {{ (systemd_backup_jobs_definitions | selectattr('enabled', 'undefined') | list)
+      + (systemd_backup_jobs_definitions | selectattr('enabled', 'defined') | selectattr('enabled') | list) }}
+  tags:
+    - always
+
+# Validate public role inputs and host prerequisites before making changes.
+- name: "Run validation tasks"
+  ansible.builtin.include_tasks:
+    file: validate.yml
+    apply:
+      tags:
+        - role-systemd-backup-jobs-validate
+  tags:
+    - role-systemd-backup-jobs-validate
+
+# Install the runner, its configuration, the output group, and the systemd service template.
+- name: "Run installation tasks"
+  ansible.builtin.include_tasks:
+    file: install.yml
+    apply:
+      tags:
+        - role-systemd-backup-jobs-install
+  tags:
+    - role-systemd-backup-jobs-install
+
+# Install one job definition and one timer per enabled job.
+- name: "Run job tasks"
+  ansible.builtin.include_tasks:
+    file: jobs.yml
+    apply:
+      tags:
+        - role-systemd-backup-jobs-jobs
+  tags:
+    - role-systemd-backup-jobs-jobs
+
+# Remove timers of disabled or undefined jobs, and optionally their outputs.
+- name: "Run cleanup tasks"
+  ansible.builtin.include_tasks:
+    file: cleanup.yml
+    apply:
+      tags:
+        - role-systemd-backup-jobs-cleanup
+  tags:
+    - role-systemd-backup-jobs-cleanup

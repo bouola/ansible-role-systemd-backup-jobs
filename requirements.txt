@@ -1,0 +1,6 @@
+ansible==14.2.0
+ansible-lint
+docker
+molecule==26.6.0
+molecule-plugins==26.7.15
+yamllint

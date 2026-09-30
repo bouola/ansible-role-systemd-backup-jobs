@@ -1,0 +1,121 @@
+---
+- name: "Create output group"
+  ansible.builtin.group:
+    name: "{{ systemd_backup_jobs_output_group }}"
+    system: true
+    state: present
+
+# Members must already exist: the role grants read access, it never creates accounts.
+- name: "Collect output group member accounts"
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ _systemd_backup_jobs_member }}"
+    fail_key: false
+  loop: "{{ systemd_backup_jobs_output_group_members }}"
+  loop_control:
+    loop_var: _systemd_backup_jobs_member
+    label: "{{ _systemd_backup_jobs_member }}"
+  register: _systemd_backup_jobs_member_accounts
+
+- name: "Fail when an output group member does not exist"
+  ansible.builtin.assert:
+    that:
+      - _systemd_backup_jobs_member_account.ansible_facts.getent_passwd[_systemd_backup_jobs_member_account._systemd_backup_jobs_member] is not none
+    fail_msg: >-
+      User {{ _systemd_backup_jobs_member_account._systemd_backup_jobs_member }} listed in
+      systemd_backup_jobs_output_group_members does not exist. Create the account first.
+  loop: "{{ _systemd_backup_jobs_member_accounts.results }}"
+  loop_control:
+    loop_var: _systemd_backup_jobs_member_account
+    label: "{{ _systemd_backup_jobs_member_account._systemd_backup_jobs_member }}"
+
+- name: "Add members to output group"
+  ansible.builtin.user:
+    name: "{{ _systemd_backup_jobs_member }}"
+    groups: "{{ systemd_backup_jobs_output_group }}"
+    append: true
+  loop: "{{ systemd_backup_jobs_output_group_members }}"
+  loop_control:
+    loop_var: _systemd_backup_jobs_member
+    label: "{{ _systemd_backup_jobs_member }}"
+
+- name: "Create configuration directories"
+  ansible.builtin.file:
+    path: "{{ _systemd_backup_jobs_directory.path }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "{{ _systemd_backup_jobs_directory.mode }}"
+  loop:
+    - path: "{{ systemd_backup_jobs_config_dir }}"
+      mode: "0755"
+    # Job definitions may reference secrets through their commands, so only root reads them.
+    - path: "{{ systemd_backup_jobs_config_dir }}/jobs"
+      mode: "0700"
+    - path: "{{ systemd_backup_jobs_state_dir }}"
+      mode: "0750"
+  loop_control:
+    loop_var: _systemd_backup_jobs_directory
+    label: "{{ _systemd_backup_jobs_directory.path }}"
+
+- name: "Create output directory"
+  ansible.builtin.file:
+    path: "{{ systemd_backup_jobs_output_dir }}"
+    state: directory
+    owner: "root"
+    group: "{{ systemd_backup_jobs_output_group }}"
+    mode: "0750"
+
+- name: "Collect textfile collector directory state"
+  ansible.builtin.stat:
+    path: "{{ systemd_backup_jobs_textfile_dir }}"
+  register: _systemd_backup_jobs_textfile_dir_state
+  when: systemd_backup_jobs_textfile_dir | length > 0
+
+- name: "Fail when textfile collector path is not a directory"
+  ansible.builtin.assert:
+    that:
+      - _systemd_backup_jobs_textfile_dir_state.stat.isdir
+    fail_msg: >-
+      {{ systemd_backup_jobs_textfile_dir }} exists but is not a directory.
+      Point systemd_backup_jobs_textfile_dir to node-exporter's textfile collector directory.
+  when:
+    - systemd_backup_jobs_textfile_dir | length > 0
+    - _systemd_backup_jobs_textfile_dir_state.stat.exists
+
+# An existing directory belongs to node-exporter's setup and is left unchanged.
+- name: "Create textfile collector directory when missing"
+  ansible.builtin.file:
+    path: "{{ systemd_backup_jobs_textfile_dir }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode: "0755"
+  when:
+    - systemd_backup_jobs_textfile_dir | length > 0
+    - not _systemd_backup_jobs_textfile_dir_state.stat.exists
+
+- name: "Install backup job runner"
+  ansible.builtin.copy:
+    src: "systemd-backup-jobs"
+    dest: "{{ systemd_backup_jobs_bin_path }}"
+    owner: "root"
+    group: "root"
+    mode: "0755"
+
+- name: "Install runner configuration"
+  ansible.builtin.template:
+    src: "config.json.j2"
+    dest: "{{ systemd_backup_jobs_config_dir }}/config.json"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+
+- name: "Install backup job service template"
+  ansible.builtin.template:
+    src: "systemd-backup-jobs@.service.j2"
+    dest: "{{ systemd_backup_jobs_systemd_dir }}/systemd-backup-jobs@.service"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  notify: "Reload systemd"

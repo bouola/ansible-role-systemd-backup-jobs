@@ -1,0 +1,30 @@
+---
+- name: "Prepare"
+  hosts: all
+  become: true
+  tasks:
+    - name: "Create collector account"
+      ansible.builtin.user:
+        name: "collector"
+        shell: "/bin/sh"
+
+    - name: "Create host job source file"
+      ansible.builtin.copy:
+        dest: "/srv/molecule-source.txt"
+        content: "molecule host job source\n"
+        owner: "root"
+        group: "root"
+        mode: "0600"
+
+    # A leftover timer from a job that no longer exists must be removed by the role.
+    - name: "Create stale job timer"
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/systemd-backup-jobs@legacy.timer"
+        content: |
+          [Timer]
+          OnCalendar=daily
+          [Install]
+          WantedBy=timers.target
+        owner: "root"
+        group: "root"
+        mode: "0644"

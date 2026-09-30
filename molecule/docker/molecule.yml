@@ -1,0 +1,41 @@
+---
+dependency:
+  name: galaxy
+
+driver:
+  name: docker
+
+platforms:
+  - name: "bouola_systemd-backup-jobs-${os:-ubuntu2404}-docker"
+    image: "${image:-geerlingguy/docker-ubuntu2404-ansible}:${tag:-latest}"
+    # Container names contain "_", which is invalid in a hostname: without an explicit one,
+    # sudo cannot resolve the host and every task waits for a DNS timeout.
+    hostname: "systemd-backup-jobs-docker"
+    pre_build_image: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    # The container root is overlayfs, and overlayfs cannot stack on it: keep Docker's image
+    # and snapshot storage on tmpfs so the nested daemon can mount its layers.
+    tmpfs:
+      - "/var/lib/docker:rw,exec,size=2g"
+      - "/var/lib/containerd:rw,exec,size=2g"
+    privileged: true
+    tty: true
+    command: /usr/sbin/init
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      remote_tmp: /tmp/.ansible/tmp
+  env:
+    ANSIBLE_FORCE_COLOR: "true"
+    ANSIBLE_LOAD_CALLBACK_PLUGINS: "true"
+    ANSIBLE_CALLBACKS_ENABLED: "ansible.posix.profile_tasks"
+    ANSIBLE_STDOUT_CALLBACK: "ansible.posix.debug"
+  options:
+    v: true
+
+verifier:
+  name: ansible

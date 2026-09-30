@@ -1,0 +1,24 @@
+---
+galaxy_info:
+  role_name: "systemd_backup_jobs"
+  namespace: "bouola"
+  description: "Run scheduled backup commands in throwaway containers or on the host with systemd timers, and publish verified outputs"
+  author: "bouola"
+  license: "MIT"
+  min_ansible_version: "2.15"
+  galaxy_tags:
+    - "backup"
+    - "systemd"
+    - "timer"
+    - "docker"
+    - "database"
+    - "prometheus"
+  platforms:
+    - name: "Debian"
+      versions:
+        - "bookworm"
+        - "trixie"
+    - name: "Ubuntu"
+      versions:
+        - "jammy"
+        - "noble"

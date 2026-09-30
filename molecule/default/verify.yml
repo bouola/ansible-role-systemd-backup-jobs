@@ -1,0 +1,245 @@
+---
+- name: "Verify"
+  hosts: all
+  become: true
+  vars_files:
+    - >-
+      {{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY')
+      | default(lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY')
+      | dirname | dirname, true) }}/defaults/main.yml
+  # Not named systemd_backup_jobs_textfile_dir: vars_files (the role defaults) takes precedence over vars.
+  vars:
+    _systemd_backup_jobs_expected_textfile_dir: "/var/lib/node_exporter/textfile_collector"
+  tasks:
+    - name: "Collect enabled job timer states"
+      ansible.builtin.systemd:
+        name: "systemd-backup-jobs@{{ _systemd_backup_jobs_timer }}.timer"
+      loop:
+        - "host-copy"
+        - "host-flaky"
+        - "host-empty"
+      loop_control:
+        loop_var: _systemd_backup_jobs_timer
+      register: _systemd_backup_jobs_timer_states
+
+    - name: "Assert enabled job timers are enabled and active"
+      ansible.builtin.assert:
+        that:
+          - _systemd_backup_jobs_timer_state.status.ActiveState == "active"
+          - _systemd_backup_jobs_timer_state.status.UnitFileState == "enabled"
+        fail_msg: >-
+          Timer of job {{ _systemd_backup_jobs_timer_state._systemd_backup_jobs_timer }} is not enabled and active.
+      loop: "{{ _systemd_backup_jobs_timer_states.results }}"
+      loop_control:
+        loop_var: _systemd_backup_jobs_timer_state
+        label: "{{ _systemd_backup_jobs_timer_state._systemd_backup_jobs_timer }}"
+
+    - name: "Collect disabled and stale timer files"
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/systemd-backup-jobs@{{ _systemd_backup_jobs_timer }}.timer"
+      loop:
+        - "host-disabled"
+        - "legacy"
+      loop_control:
+        loop_var: _systemd_backup_jobs_timer
+      register: _systemd_backup_jobs_absent_timers
+
+    - name: "Assert disabled and stale timers are not installed"
+      ansible.builtin.assert:
+        that:
+          - not _systemd_backup_jobs_absent_timer.stat.exists
+        fail_msg: >-
+          Timer of job {{ _systemd_backup_jobs_absent_timer._systemd_backup_jobs_timer }} should have been removed.
+      loop: "{{ _systemd_backup_jobs_absent_timers.results }}"
+      loop_control:
+        loop_var: _systemd_backup_jobs_absent_timer
+        label: "{{ _systemd_backup_jobs_absent_timer._systemd_backup_jobs_timer }}"
+
+    - name: "Read host-copy timer"
+      ansible.builtin.slurp:
+        src: "/etc/systemd/system/systemd-backup-jobs@host-copy.timer"
+      register: _systemd_backup_jobs_host_copy_timer
+
+    - name: "Assert host-copy timer schedule"
+      ansible.builtin.assert:
+        that:
+          - "'OnCalendar=*-*-* 01:00:00' in _systemd_backup_jobs_host_copy_timer.content | b64decode"
+          - "'RandomizedDelaySec=5m' in _systemd_backup_jobs_host_copy_timer.content | b64decode"
+          - "'Persistent=true' in _systemd_backup_jobs_host_copy_timer.content | b64decode"
+        fail_msg: "host-copy timer does not contain the configured schedule."
+
+    - name: "Run host-copy job"
+      ansible.builtin.systemd:
+        name: "systemd-backup-jobs@host-copy.service"
+        state: started
+
+    - name: "Collect host-copy output"
+      ansible.builtin.stat:
+        path: "{{ systemd_backup_jobs_output_dir }}/host-copy/{{ _systemd_backup_jobs_output_file }}"
+      loop:
+        - "source.txt"
+        - "nested/file.txt"
+        - "manifest.json"
+      loop_control:
+        loop_var: _systemd_backup_jobs_output_file
+      register: _systemd_backup_jobs_host_copy_files
+
+    - name: "Assert host-copy output is published with restricted permissions"
+      ansible.builtin.assert:
+        that:
+          - _systemd_backup_jobs_host_copy_file.stat.exists
+          - _systemd_backup_jobs_host_copy_file.stat.pw_name == "root"
+          - _systemd_backup_jobs_host_copy_file.stat.gr_name == systemd_backup_jobs_output_group
+          - _systemd_backup_jobs_host_copy_file.stat.mode == "0640"
+        fail_msg: >-
+          {{ _systemd_backup_jobs_host_copy_file._systemd_backup_jobs_output_file }} is missing or is not
+          root:{{ systemd_backup_jobs_output_group }} 0640.
+      loop: "{{ _systemd_backup_jobs_host_copy_files.results }}"
+      loop_control:
+        loop_var: _systemd_backup_jobs_host_copy_file
+        label: "{{ _systemd_backup_jobs_host_copy_file._systemd_backup_jobs_output_file }}"
+
+    - name: "Read host-copy manifest"
+      ansible.builtin.slurp:
+        src: "{{ systemd_backup_jobs_output_dir }}/host-copy/manifest.json"
+      register: _systemd_backup_jobs_host_copy_manifest_raw
+
+    - name: "Assert host-copy manifest content"
+      vars:
+        _systemd_backup_jobs_host_copy_manifest: "{{ _systemd_backup_jobs_host_copy_manifest_raw.content | b64decode | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _systemd_backup_jobs_host_copy_manifest.job == "host-copy"
+          - _systemd_backup_jobs_host_copy_manifest.mode == "host"
+          - _systemd_backup_jobs_host_copy_manifest.files | map(attribute='path') | sort == ['nested/file.txt', 'source.txt']
+          - _systemd_backup_jobs_host_copy_manifest.total_size > 0
+        fail_msg: "host-copy manifest does not describe the published files."
+
+    - name: "Read output as the collector account"
+      ansible.builtin.command:
+        cmd: "cat {{ systemd_backup_jobs_output_dir }}/host-copy/source.txt"
+      become_user: "collector"
+      changed_when: false
+      register: _systemd_backup_jobs_collector_read
+
+    - name: "Try to write output as the collector account"
+      ansible.builtin.command:
+        cmd: "touch {{ systemd_backup_jobs_output_dir }}/host-copy/intruder.txt"
+      become_user: "collector"
+      changed_when: false
+      failed_when: false
+      register: _systemd_backup_jobs_collector_write
+
+    - name: "Assert collector can read but not write outputs"
+      ansible.builtin.assert:
+        that:
+          - "'molecule host job source' in _systemd_backup_jobs_collector_read.stdout"
+          - _systemd_backup_jobs_collector_write.rc != 0
+        fail_msg: "The output group grants the wrong access to the collector account."
+
+    # Only the output published just above: outputs of other jobs may come from an earlier verify run.
+    - name: "Verify host-copy output with the runner"
+      ansible.builtin.command:
+        cmd: "{{ systemd_backup_jobs_bin_path }} verify {{ systemd_backup_jobs_output_dir }}/host-copy --max-age 1h"
+      changed_when: false
+
+    - name: "Read host-copy metrics"
+      ansible.builtin.slurp:
+        src: "{{ _systemd_backup_jobs_expected_textfile_dir }}/systemd_backup_job_host-copy.prom"
+      register: _systemd_backup_jobs_host_copy_metrics
+
+    - name: "Assert host-copy metrics report a success"
+      ansible.builtin.assert:
+        that:
+          - "'systemd_backup_job_last_status{job=\"host-copy\"} 1' in _systemd_backup_jobs_host_copy_metrics.content | b64decode"
+          - "'systemd_backup_job_last_success_timestamp_seconds{job=\"host-copy\"}' in _systemd_backup_jobs_host_copy_metrics.content | b64decode"
+        fail_msg: "host-copy metrics do not report a successful run."
+
+    # Remove the failure trigger left by an earlier verify run, so the first run succeeds.
+    - name: "Make host-flaky succeed"
+      ansible.builtin.file:
+        path: "/srv/molecule-fail"
+        state: absent
+
+    - name: "Run host-flaky job once successfully"
+      ansible.builtin.systemd:
+        name: "systemd-backup-jobs@host-flaky.service"
+        state: started
+
+    - name: "Make host-flaky fail"
+      ansible.builtin.file:
+        path: "/srv/molecule-fail"
+        state: touch
+        mode: "0644"
+
+    - name: "Run host-flaky job again"
+      ansible.builtin.command:
+        cmd: "systemctl start systemd-backup-jobs@host-flaky.service"
+      changed_when: false
+      failed_when: false
+      register: _systemd_backup_jobs_flaky_run
+
+    - name: "Collect host-flaky previous output"
+      ansible.builtin.stat:
+        path: "{{ systemd_backup_jobs_output_dir }}/host-flaky/out.txt"
+      register: _systemd_backup_jobs_flaky_output
+
+    - name: "Collect host-flaky leftovers"
+      ansible.builtin.stat:
+        path: "{{ systemd_backup_jobs_output_dir }}/.host-flaky.tmp"
+      register: _systemd_backup_jobs_flaky_tmp
+
+    - name: "Read host-flaky metrics"
+      ansible.builtin.slurp:
+        src: "{{ _systemd_backup_jobs_expected_textfile_dir }}/systemd_backup_job_host-flaky.prom"
+      register: _systemd_backup_jobs_flaky_metrics
+
+    - name: "Assert a failed run keeps the previous output and reports the failure"
+      ansible.builtin.assert:
+        that:
+          - _systemd_backup_jobs_flaky_run.rc != 0
+          - _systemd_backup_jobs_flaky_output.stat.exists
+          - not _systemd_backup_jobs_flaky_tmp.stat.exists
+          - "'systemd_backup_job_last_status{job=\"host-flaky\"} 0' in _systemd_backup_jobs_flaky_metrics.content | b64decode"
+          - "'systemd_backup_job_last_success_timestamp_seconds{job=\"host-flaky\"}' in _systemd_backup_jobs_flaky_metrics.content | b64decode"
+        fail_msg: >-
+          A failed host-flaky run must exit non-zero, keep the previous output, remove its temporary
+          directory, report status 0, and keep the last success timestamp.
+
+    - name: "Run host-empty job"
+      ansible.builtin.command:
+        cmd: "systemctl start systemd-backup-jobs@host-empty.service"
+      changed_when: false
+      failed_when: false
+      register: _systemd_backup_jobs_empty_run
+
+    - name: "Collect host-empty output"
+      ansible.builtin.stat:
+        path: "{{ systemd_backup_jobs_output_dir }}/host-empty"
+      register: _systemd_backup_jobs_empty_output
+
+    - name: "Assert a job without output fails and publishes nothing"
+      ansible.builtin.assert:
+        that:
+          - _systemd_backup_jobs_empty_run.rc != 0
+          - not _systemd_backup_jobs_empty_output.stat.exists
+        fail_msg: "A job that writes no file must fail and must not publish an output."
+
+    - name: "Corrupt a published file"
+      ansible.builtin.lineinfile:
+        path: "{{ systemd_backup_jobs_output_dir }}/host-copy/source.txt"
+        line: "tampered"
+
+    - name: "Verify outputs after corruption"
+      ansible.builtin.command:
+        cmd: "{{ systemd_backup_jobs_bin_path }} verify {{ systemd_backup_jobs_output_dir }}/host-copy"
+      changed_when: false
+      failed_when: false
+      register: _systemd_backup_jobs_corrupted_verify
+
+    - name: "Assert verify detects the corruption"
+      ansible.builtin.assert:
+        that:
+          - _systemd_backup_jobs_corrupted_verify.rc != 0
+          - "'does not match its checksum' in _systemd_backup_jobs_corrupted_verify.stdout"
+        fail_msg: "verify did not detect a file that no longer matches its manifest."

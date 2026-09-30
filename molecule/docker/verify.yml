@@ -1,0 +1,89 @@
+---
+- name: "Verify"
+  hosts: all
+  become: true
+  vars_files:
+    - >-
+      {{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY')
+      | default(lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY')
+      | dirname | dirname, true) }}/defaults/main.yml
+  tasks:
+    - name: "Run docker jobs"
+      ansible.builtin.systemd:
+        name: "systemd-backup-jobs@{{ _systemd_backup_jobs_job }}.service"
+        state: started
+      loop:
+        - "docker-volume"
+        - "docker-exec-form"
+        - "docker-env"
+      loop_control:
+        loop_var: _systemd_backup_jobs_job
+
+    - name: "Collect docker job outputs"
+      ansible.builtin.stat:
+        path: "{{ systemd_backup_jobs_output_dir }}/{{ _systemd_backup_jobs_output }}"
+      loop:
+        - "docker-volume/data.tar"
+        - "docker-volume/manifest.json"
+        - "docker-exec-form/file.txt"
+        - "docker-env/greeting.txt"
+      loop_control:
+        loop_var: _systemd_backup_jobs_output
+      register: _systemd_backup_jobs_outputs
+
+    - name: "Assert docker job outputs are published"
+      ansible.builtin.assert:
+        that:
+          - _systemd_backup_jobs_output_state.stat.exists
+          - _systemd_backup_jobs_output_state.stat.size > 0
+          - _systemd_backup_jobs_output_state.stat.gr_name == systemd_backup_jobs_output_group
+        fail_msg: >-
+          {{ _systemd_backup_jobs_output_state._systemd_backup_jobs_output }} is missing, empty,
+          or not owned by {{ systemd_backup_jobs_output_group }}.
+      loop: "{{ _systemd_backup_jobs_outputs.results }}"
+      loop_control:
+        loop_var: _systemd_backup_jobs_output_state
+        label: "{{ _systemd_backup_jobs_output_state._systemd_backup_jobs_output }}"
+
+    - name: "Read env_file job output"
+      ansible.builtin.slurp:
+        src: "{{ systemd_backup_jobs_output_dir }}/docker-env/greeting.txt"
+      register: _systemd_backup_jobs_greeting
+
+    - name: "Assert env_file values reach the container"
+      ansible.builtin.assert:
+        that:
+          - "'hello from env_file' in _systemd_backup_jobs_greeting.content | b64decode"
+        fail_msg: "The env_file variables were not passed to the job container."
+
+    - name: "Run job with a missing network"
+      ansible.builtin.command:
+        cmd: "systemctl start systemd-backup-jobs@docker-missing-network.service"
+      changed_when: false
+      failed_when: false
+      register: _systemd_backup_jobs_missing_network_run
+
+    - name: "Read missing network job logs"
+      ansible.builtin.command:
+        cmd: "journalctl --unit systemd-backup-jobs@docker-missing-network.service --no-pager"
+      changed_when: false
+      register: _systemd_backup_jobs_missing_network_logs
+
+    - name: "Assert a missing network fails the job with a clear message"
+      ansible.builtin.assert:
+        that:
+          - _systemd_backup_jobs_missing_network_run.rc != 0
+          - "'docker network does-not-exist not found' in _systemd_backup_jobs_missing_network_logs.stdout"
+        fail_msg: "A job with a missing network must fail and name the network in its logs."
+
+    - name: "List leftover job containers"
+      ansible.builtin.command:
+        cmd: "docker ps --all --filter name=systemd-backup-jobs- --quiet"
+      changed_when: false
+      register: _systemd_backup_jobs_leftover_containers
+
+    - name: "Assert job containers are removed"
+      ansible.builtin.assert:
+        that:
+          - _systemd_backup_jobs_leftover_containers.stdout | length == 0
+        fail_msg: "Job containers must be removed after each run."

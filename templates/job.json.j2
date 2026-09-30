@@ -1,0 +1,11 @@
+{{ {
+  "name": _systemd_backup_jobs_job.name,
+  "mode": _systemd_backup_jobs_job.mode,
+  "command": _systemd_backup_jobs_job.command,
+  "timeout": _systemd_backup_jobs_job.timeout | default(systemd_backup_jobs_default_timeout),
+  "image": _systemd_backup_jobs_job.image | default(none),
+  "network": _systemd_backup_jobs_job.network | default(none),
+  "user": _systemd_backup_jobs_job.user | default(none),
+  "env_file": _systemd_backup_jobs_job.env_file | default(none),
+  "volumes": _systemd_backup_jobs_job.volumes | default([])
+} | to_nice_json }}

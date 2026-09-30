@@ -1,0 +1,189 @@
+---
+name: CI
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - "**"
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - 'README.md'
+      - '.mise.toml'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - 'README.md'
+      - '.mise.toml'
+
+jobs:
+  setup:
+    name: Setup scenarios matrix
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      scenarios: ${{ steps.matrix.outputs.scenarios }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: matrix
+        run: |
+          JSON="["
+
+          for s in $(find molecule -mindepth 1 -maxdepth 1 -type d -exec basename "{}" \;); do
+            if [ -e "molecule/${s}/molecule.yml" ]; then
+            # if [ ${s} = "default" ]; then # for local test with act
+              JSON="${JSON}\"${s}\","
+            fi
+          done
+
+          if [ "$JSON" = "[" ]; then
+            JSON="[]"
+          else
+            JSON="${JSON%?}]"
+          fi
+
+          echo "scenarios=$JSON" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7
+        with:
+          path: "${{ github.repository }}"
+      - name: Setup Mise
+        uses: jdx/mise-action@v2
+        with:
+          experimental: true
+      - name: install lint dependencies
+        working-directory: "${{ github.repository }}"
+        run: mise run setup:dev
+      - name: yamllint
+        working-directory: "${{ github.repository }}"
+        run: mise exec -- yamllint .
+      - name: ansible-lint
+        working-directory: "${{ github.repository }}"
+        run: mise exec -- ansible-lint
+
+  test:
+    name: Scenario "${{ matrix.scenario }}" on ${{ matrix.config.os }}
+    needs:
+      - lint
+      - setup
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJson(needs.setup.outputs.scenarios) }}
+        config:
+          - os: "ubuntu2404"
+            image: "geerlingguy/docker-ubuntu2404-ansible"
+            tag: "latest"
+          - os: "ubuntu2204"
+            image: "geerlingguy/docker-ubuntu2204-ansible"
+            tag: "latest"
+          - os: "debian12"
+            image: "geerlingguy/docker-debian12-ansible"
+            tag: "latest"
+          - os: "debian13"
+            image: "geerlingguy/docker-debian13-ansible"
+            tag: "latest"
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7
+        with:
+          path: "${{ github.repository }}"
+      - name: Setup Mise
+        uses: jdx/mise-action@v2
+        with:
+          experimental: true
+      - name: install dependencies
+        working-directory: "${{ github.repository }}"
+        run: mise run setup:dev
+      - name: Set correct right to docker.
+        run: sudo chmod 666 /var/run/docker.sock
+      - name: molecule
+        working-directory: "${{ github.repository }}"
+        run: mise exec -- molecule test -s ${{ matrix.scenario }}
+        env:
+          os: ${{ matrix.config.os }}
+          image: ${{ matrix.config.image }}
+          tag: ${{ matrix.config.tag }}
+
+  release-dry-run:
+    name: Release (Dry Run)
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.1.7
+        with:
+          fetch-depth: 0
+      - name: Run Semantic Release dry run
+        uses: cycjimmy/semantic-release-action@v6
+        with:
+          dry_run: "true"
+          extra_plugins: |
+            @semantic-release/github
+            @semantic-release/commit-analyzer
+            @semantic-release/release-notes-generator
+            @semantic-release/changelog
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    name: Release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.1.7
+        with:
+          fetch-depth: 0
+      - name: Run Semantic Release
+        uses: cycjimmy/semantic-release-action@v6
+        with:
+          dry_run: "false"
+          extra_plugins: |
+            @semantic-release/github
+            @semantic-release/commit-analyzer
+            @semantic-release/release-notes-generator
+            @semantic-release/changelog
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    name: Publish Ansible Galaxy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: publish
+        uses: robertdebock/galaxy-action@1.2.1
+        with:
+          galaxy_api_key: ${{ secrets.galaxy_api_key }}
+          git_branch: main
