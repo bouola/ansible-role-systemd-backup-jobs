@@ -1,0 +1,36 @@
+---
+- name: "Converge"
+  hosts: all
+  become: true
+  vars:
+    systemd_backup_jobs_output_group_members:
+      - "collector"
+    systemd_backup_jobs_textfile_dir: "/var/lib/node_exporter/textfile_collector"
+    systemd_backup_jobs_definitions:
+      - name: "host-copy"
+        mode: "host"
+        schedule: "*-*-* 01:00:00"
+        randomized_delay: "5m"
+        timeout: "5m"
+        command: >-
+          cp /srv/molecule-source.txt "$BACKUP_OUTPUT/source.txt"
+          && mkdir "$BACKUP_OUTPUT/nested"
+          && echo nested > "$BACKUP_OUTPUT/nested/file.txt"
+      # Succeeds until /srv/molecule-fail exists, to check that a failed run keeps the previous output.
+      - name: "host-flaky"
+        mode: "host"
+        schedule: "Mon..Fri *-*-* 02:00:00"
+        command: >-
+          test ! -e /srv/molecule-fail && echo ok > "$BACKUP_OUTPUT/out.txt"
+      - name: "host-empty"
+        mode: "host"
+        schedule: "*-*-* 03:00:00"
+        command: "true"
+      - name: "host-disabled"
+        mode: "host"
+        schedule: "*-*-* 04:00:00"
+        command: "echo never > \"$BACKUP_OUTPUT/never.txt\""
+        enabled: false
+
+  roles:
+    - role: "bouola.systemd_backup_jobs"

@@ -1,0 +1,362 @@
+#!/usr/bin/python3
+"""Run one backup job, or verify published backup outputs.
+
+Managed by the Ansible role bouola.systemd_backup_jobs. Standard library only.
+
+  systemd-backup-jobs run <job>
+  systemd-backup-jobs verify <directory> [--max-age 20h]
+"""
+
+import argparse
+import datetime
+import fcntl
+import grp
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+VERSION = "1"
+CONFIG_DIR = os.environ.get("SYSTEMD_BACKUP_JOBS_CONFIG_DIR", "/etc/systemd-backup-jobs")
+MANIFEST = "manifest.json"
+KILL_GRACE_SECONDS = 10
+DURATION_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+class JobError(Exception):
+    """A job failed; the previous output is kept."""
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def parse_duration(value):
+    match = re.fullmatch(r"(\d+)(s|m|h|d)?", str(value).strip())
+    if not match:
+        raise JobError(f"invalid duration {value!r}, expected for example 90s, 30m, 2h or 1d")
+    return int(match.group(1)) * DURATION_UNITS[match.group(2) or ""]
+
+
+def now_utc():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def load_json(path):
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def write_file_atomically(path, content, mode):
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    os.chmod(tmp_path, mode)
+    os.replace(tmp_path, path)
+
+
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def output_files(directory):
+    """Return the files of an output directory, relative to it, without the manifest."""
+    files = []
+    for root, _dirs, names in os.walk(directory):
+        for name in names:
+            relative = os.path.relpath(os.path.join(root, name), directory)
+            if relative != MANIFEST:
+                files.append(relative)
+    return sorted(files)
+
+
+def previous_size(final_dir):
+    manifest_path = os.path.join(final_dir, MANIFEST)
+    if not os.path.isfile(manifest_path):
+        return 0
+    try:
+        return int(load_json(manifest_path).get("total_size", 0))
+    except (ValueError, OSError):
+        return 0
+
+
+def read_env_file(path):
+    env = {}
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            env[key.strip()] = value
+    return env
+
+
+def shell_argv(command):
+    """A string runs through /bin/sh -c; a list runs as is."""
+    if isinstance(command, list):
+        return [str(part) for part in command]
+    return ["/bin/sh", "-c", command]
+
+
+def run_with_timeout(argv, timeout, env=None, on_timeout=None):
+    process = subprocess.Popen(argv, env=env, start_new_session=True)
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log(f"timeout after {timeout}s, stopping the command")
+        if on_timeout:
+            on_timeout()
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        raise JobError(f"command exceeded its timeout of {timeout}s")
+
+
+def run_docker(job, tmp_dir, timeout):
+    container = f"systemd-backup-jobs-{job['name']}"
+    subprocess.run(["docker", "rm", "--force", container], capture_output=True, check=False)
+
+    network = job.get("network")
+    if network and subprocess.run(["docker", "network", "inspect", network], capture_output=True, check=False).returncode:
+        raise JobError(f"docker network {network} not found")
+
+    argv = ["docker", "run", "--rm", "--name", container, "--volume", f"{tmp_dir}:/backup"]
+    if network:
+        argv += ["--network", network]
+    # Values are parsed like Docker Compose does (quotes stripped) and passed through the
+    # environment of the docker CLI, so they never appear on its command line.
+    env = dict(os.environ)
+    if job.get("env_file"):
+        variables = read_env_file(job["env_file"])
+        env.update(variables)
+        for key in sorted(variables):
+            argv += ["--env", key]
+    if job.get("user"):
+        argv += ["--user", job["user"]]
+    for volume in job.get("volumes", []):
+        argv += ["--volume", volume]
+    argv += [job["image"]] + shell_argv(job["command"])
+
+    def stop_container():
+        subprocess.run(["docker", "rm", "--force", container], capture_output=True, check=False)
+
+    return run_with_timeout(argv, timeout, env=env, on_timeout=stop_container)
+
+
+def run_host(job, tmp_dir, timeout):
+    env = dict(os.environ)
+    if job.get("env_file"):
+        env.update(read_env_file(job["env_file"]))
+    env["BACKUP_OUTPUT"] = tmp_dir
+    return run_with_timeout(shell_argv(job["command"]), timeout, env=env)
+
+
+def set_output_permissions(directory, gid):
+    # Outputs may be written by another user (a container user, the git user of GitLab): root takes them over.
+    uid = 0 if os.geteuid() == 0 else -1
+    for root, dirs, names in os.walk(directory):
+        os.chown(root, uid, gid)
+        os.chmod(root, 0o750)
+        for name in names:
+            path = os.path.join(root, name)
+            os.chown(path, uid, gid)
+            os.chmod(path, 0o640)
+        for name in dirs:
+            os.chown(os.path.join(root, name), uid, gid)
+
+
+def build_manifest(job, tmp_dir, started_at, finished_at):
+    files = []
+    for relative in output_files(tmp_dir):
+        path = os.path.join(tmp_dir, relative)
+        files.append({"path": relative, "size": os.path.getsize(path), "sha256": sha256_of(path)})
+    return {
+        "job": job["name"],
+        "mode": job["mode"],
+        "image": job.get("image"),
+        "host": socket.gethostname(),
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_seconds": round((finished_at - started_at).total_seconds(), 3),
+        "total_size": sum(item["size"] for item in files),
+        "files": files,
+        "runner_version": VERSION,
+    }
+
+
+def publish(tmp_dir, final_dir):
+    """Replace the previous output in one rename so readers never see a partial output."""
+    old_dir = f"{final_dir}.old"
+    shutil.rmtree(old_dir, ignore_errors=True)
+    if os.path.isdir(final_dir):
+        os.rename(final_dir, old_dir)
+    os.rename(tmp_dir, final_dir)
+    shutil.rmtree(old_dir, ignore_errors=True)
+
+
+def write_state_and_metrics(config, job_name, success, duration, size, started_at):
+    state_path = os.path.join(config["state_dir"], f"{job_name}.json")
+    state = {}
+    if os.path.isfile(state_path):
+        try:
+            state = load_json(state_path)
+        except (ValueError, OSError):
+            state = {}
+    state["last_run_timestamp"] = started_at.timestamp()
+    state["last_status"] = 1 if success else 0
+    state["last_duration_seconds"] = duration
+    if success:
+        state["last_success_timestamp"] = started_at.timestamp()
+        state["last_size_bytes"] = size
+    write_file_atomically(state_path, json.dumps(state, indent=2) + "\n", 0o640)
+
+    textfile_dir = config.get("textfile_dir")
+    if not textfile_dir:
+        return
+    label = f'job="{job_name}"'
+    lines = [
+        "# HELP systemd_backup_job_last_run_timestamp_seconds Start time of the last run.",
+        "# TYPE systemd_backup_job_last_run_timestamp_seconds gauge",
+        f"systemd_backup_job_last_run_timestamp_seconds{{{label}}} {state['last_run_timestamp']:.0f}",
+        "# HELP systemd_backup_job_last_status 1 when the last run succeeded, 0 otherwise.",
+        "# TYPE systemd_backup_job_last_status gauge",
+        f"systemd_backup_job_last_status{{{label}}} {state['last_status']}",
+        "# HELP systemd_backup_job_last_duration_seconds Duration of the last run.",
+        "# TYPE systemd_backup_job_last_duration_seconds gauge",
+        f"systemd_backup_job_last_duration_seconds{{{label}}} {state['last_duration_seconds']:.3f}",
+    ]
+    if "last_success_timestamp" in state:
+        lines += [
+            "# HELP systemd_backup_job_last_success_timestamp_seconds Start time of the last successful run.",
+            "# TYPE systemd_backup_job_last_success_timestamp_seconds gauge",
+            f"systemd_backup_job_last_success_timestamp_seconds{{{label}}} {state['last_success_timestamp']:.0f}",
+            "# HELP systemd_backup_job_last_size_bytes Size of the last published output.",
+            "# TYPE systemd_backup_job_last_size_bytes gauge",
+            f"systemd_backup_job_last_size_bytes{{{label}}} {state['last_size_bytes']}",
+        ]
+    write_file_atomically(os.path.join(textfile_dir, f"systemd_backup_job_{job_name}.prom"), "\n".join(lines) + "\n", 0o644)
+
+
+def run_job(config, job):
+    output_dir = config["output_dir"]
+    gid = grp.getgrnam(config["output_group"]).gr_gid
+    final_dir = os.path.join(output_dir, job["name"])
+    tmp_dir = os.path.join(output_dir, f".{job['name']}.tmp")
+    timeout = parse_duration(job["timeout"])
+
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    needed = int(previous_size(final_dir) * float(config["min_free_ratio"]))
+    free = shutil.disk_usage(output_dir).free
+    if needed and free < needed:
+        raise JobError(f"not enough free space in {output_dir}: {free} bytes free, {needed} bytes required")
+
+    os.makedirs(tmp_dir, mode=0o750)
+    os.chown(tmp_dir, 0 if os.geteuid() == 0 else -1, gid)
+    os.chmod(tmp_dir, 0o750)
+
+    if job.get("env_file") and not os.path.isfile(job["env_file"]):
+        raise JobError(f"env_file {job['env_file']} not found")
+
+    started_at = now_utc()
+    runner = run_docker if job["mode"] == "docker" else run_host
+    return_code = runner(job, tmp_dir, timeout)
+    finished_at = now_utc()
+    if return_code != 0:
+        raise JobError(f"command exited with code {return_code}")
+
+    files = output_files(tmp_dir)
+    if not files or all(os.path.getsize(os.path.join(tmp_dir, name)) == 0 for name in files):
+        raise JobError("command produced no non-empty file in its output directory")
+
+    manifest = build_manifest(job, tmp_dir, started_at, finished_at)
+    write_file_atomically(os.path.join(tmp_dir, MANIFEST), json.dumps(manifest, indent=2) + "\n", 0o640)
+    set_output_permissions(tmp_dir, gid)
+    publish(tmp_dir, final_dir)
+    return started_at, manifest["duration_seconds"], manifest["total_size"]
+
+
+def command_run(args):
+    config = load_json(os.path.join(CONFIG_DIR, "config.json"))
+    job = load_json(os.path.join(CONFIG_DIR, "jobs", f"{args.job}.json"))
+    os.makedirs(config["state_dir"], exist_ok=True)
+
+    lock_path = os.path.join(config["state_dir"], "run.lock")
+    with open(lock_path, "w", encoding="utf-8") as lock:
+        log(f"job {job['name']}: waiting for the host lock")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        attempt_started = now_utc()
+        monotonic_start = time.monotonic()
+        try:
+            started_at, duration, size = run_job(config, job)
+        except (JobError, OSError, subprocess.SubprocessError) as error:
+            shutil.rmtree(os.path.join(config["output_dir"], f".{job['name']}.tmp"), ignore_errors=True)
+            write_state_and_metrics(config, job["name"], False, time.monotonic() - monotonic_start, 0, attempt_started)
+            log(f"job {job['name']}: FAILED: {error}")
+            return 1
+        write_state_and_metrics(config, job["name"], True, duration, size, started_at)
+        log(f"job {job['name']}: published {size} bytes in {duration:.1f}s")
+        return 0
+
+
+def command_verify(args):
+    max_age = parse_duration(args.max_age) if args.max_age else None
+    manifests = []
+    for root, _dirs, names in os.walk(args.directory):
+        if MANIFEST in names:
+            manifests.append(os.path.join(root, MANIFEST))
+    if not manifests:
+        log(f"no {MANIFEST} found under {args.directory}")
+        return 1
+
+    failures = 0
+    for manifest_path in sorted(manifests):
+        base = os.path.dirname(manifest_path)
+        try:
+            manifest = load_json(manifest_path)
+            age = (now_utc() - datetime.datetime.fromisoformat(manifest["finished_at"])).total_seconds()
+            if max_age is not None and age > max_age:
+                raise JobError(f"output is {age / 3600:.1f}h old, maximum is {max_age / 3600:.1f}h")
+            for item in manifest["files"]:
+                path = os.path.join(base, item["path"])
+                if not os.path.isfile(path) or sha256_of(path) != item["sha256"]:
+                    raise JobError(f"{item['path']} is missing or does not match its checksum")
+        except (JobError, KeyError, ValueError, OSError) as error:
+            failures += 1
+            log(f"FAILED {base}: {error}")
+            continue
+        log(f"OK {base}")
+    return 1 if failures else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="systemd-backup-jobs")
+    subparsers = parser.add_subparsers(dest="action", required=True)
+    run_parser = subparsers.add_parser("run", help="run one configured job")
+    run_parser.add_argument("job")
+    verify_parser = subparsers.add_parser("verify", help="check manifests and checksums under a directory")
+    verify_parser.add_argument("directory")
+    verify_parser.add_argument("--max-age", help="maximum age of each output, for example 20h")
+    args = parser.parse_args()
+    return command_run(args) if args.action == "run" else command_verify(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Schedule of backup job {{ _systemd_backup_jobs_job.name }}
+
+[Timer]
+OnCalendar={{ _systemd_backup_jobs_job.schedule }}
+{% if _systemd_backup_jobs_job.randomized_delay | default('') | length > 0 %}
+RandomizedDelaySec={{ _systemd_backup_jobs_job.randomized_delay }}
+{% endif %}
+Persistent=true
+Unit=systemd-backup-jobs@{{ _systemd_backup_jobs_job.name }}.service
+
+[Install]
+WantedBy=timers.target

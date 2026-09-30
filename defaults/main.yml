@@ -1,0 +1,31 @@
+---
+# Backup jobs to install. Each job runs its own command on its own systemd timer.
+# See README.md for the supported keys.
+systemd_backup_jobs_definitions: []
+
+# Directory where each job publishes its latest output, in <output_dir>/<job name>/.
+systemd_backup_jobs_output_dir: "/var/backups/systemd-backup-jobs"
+
+# Group that owns the published outputs and may read them. The group is created when missing.
+systemd_backup_jobs_output_group: "backup-reader"
+
+# Existing users added to the output group, for example the account a remote collector uses.
+systemd_backup_jobs_output_group_members: []
+
+# Directory where node-exporter's textfile collector reads metrics. Metrics are not written when empty.
+systemd_backup_jobs_textfile_dir: ""
+
+# Free space required before a job starts, relative to the size of its previous output.
+systemd_backup_jobs_min_free_ratio: 1.5
+
+# Maximum run time of a job command when the job does not set its own timeout.
+systemd_backup_jobs_default_timeout: "1h"
+
+# Remove the outputs of jobs that are no longer defined. Timers of undefined jobs are always removed.
+systemd_backup_jobs_prune_orphan_outputs: false
+
+# Location of the runner and of the job configuration on the managed host.
+systemd_backup_jobs_bin_path: "/usr/local/bin/systemd-backup-jobs"
+systemd_backup_jobs_config_dir: "/etc/systemd-backup-jobs"
+systemd_backup_jobs_state_dir: "/var/lib/systemd-backup-jobs"
+systemd_backup_jobs_systemd_dir: "/etc/systemd/system"

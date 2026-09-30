@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Backup job %i
+Documentation=https://github.com/bouola/ansible-role-systemd-backup-jobs
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart={{ systemd_backup_jobs_bin_path }} run %i
+# The runner enforces each job's own timeout. Waiting for the host lock is not bounded.
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true

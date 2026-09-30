@@ -1,0 +1,114 @@
+---
+- name: "Validate supported operating system"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts["os_family"] == "Debian"
+    fail_msg: >-
+      This role supports Debian-family operating systems only.
+      Current os_family is {{ ansible_facts["os_family"] | default('<undefined>') }}.
+
+- name: "Validate global settings"
+  ansible.builtin.assert:
+    that:
+      - systemd_backup_jobs_definitions is sequence and systemd_backup_jobs_definitions is not string
+      - systemd_backup_jobs_output_group_members is sequence and systemd_backup_jobs_output_group_members is not string
+      - systemd_backup_jobs_output_dir is string and systemd_backup_jobs_output_dir is match('^/')
+      - systemd_backup_jobs_output_group is string and systemd_backup_jobs_output_group | length > 0
+      - systemd_backup_jobs_textfile_dir is string
+      - systemd_backup_jobs_textfile_dir | length == 0 or systemd_backup_jobs_textfile_dir is match('^/')
+      - systemd_backup_jobs_min_free_ratio is number and systemd_backup_jobs_min_free_ratio >= 0
+      - systemd_backup_jobs_default_timeout is match('^[0-9]+[smhd]?$')
+      - systemd_backup_jobs_prune_orphan_outputs is boolean
+    fail_msg: >-
+      Invalid global settings. definitions and output_group_members must be lists,
+      output_dir and a non-empty textfile_dir must be absolute paths, output_group must be set,
+      min_free_ratio must be a number >= 0, default_timeout must look like 90s, 30m, 2h or 1d,
+      and prune_orphan_outputs must be a boolean.
+
+- name: "Validate job definitions"
+  ansible.builtin.assert:
+    that:
+      - _systemd_backup_jobs_job.name is string
+      - _systemd_backup_jobs_job.name is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - _systemd_backup_jobs_job.mode | default('') in ['docker', 'host']
+      - _systemd_backup_jobs_job.schedule is string and _systemd_backup_jobs_job.schedule | length > 0
+      - >-
+        (_systemd_backup_jobs_job.command is string and _systemd_backup_jobs_job.command | length > 0)
+        or (_systemd_backup_jobs_job.command is sequence and _systemd_backup_jobs_job.command | length > 0)
+      - _systemd_backup_jobs_job.timeout | default('1h') is match('^[0-9]+[smhd]?$')
+      - _systemd_backup_jobs_job.randomized_delay | default('') is string
+      - _systemd_backup_jobs_job.env_file | default('/') is match('^/')
+      - _systemd_backup_jobs_job.enabled | default(true) is boolean
+      - _systemd_backup_jobs_job.mode | default('') != 'docker' or (_systemd_backup_jobs_job.image | default('') | length > 0)
+      - _systemd_backup_jobs_job.mode | default('') == 'docker' or _systemd_backup_jobs_job.image is not defined
+      - _systemd_backup_jobs_job.mode | default('') == 'docker' or _systemd_backup_jobs_job.network is not defined
+      - _systemd_backup_jobs_job.mode | default('') == 'docker' or _systemd_backup_jobs_job.volumes is not defined
+      - _systemd_backup_jobs_job.mode | default('') == 'docker' or _systemd_backup_jobs_job.user is not defined
+      - _systemd_backup_jobs_job.volumes | default([]) is sequence and _systemd_backup_jobs_job.volumes | default([]) is not string
+    fail_msg: >-
+      Job {{ _systemd_backup_jobs_job.name | default('<missing name>') }} is invalid.
+      name must be a lowercase slug (letters, digits, dashes), mode must be docker or host,
+      schedule and command are required, timeout must look like 90s, 30m, 2h or 1d,
+      env_file must be an absolute path, and enabled must be a boolean.
+      docker jobs require image; image, network, volumes, and user are only allowed in docker mode.
+  loop: "{{ systemd_backup_jobs_definitions }}"
+  loop_control:
+    loop_var: _systemd_backup_jobs_job
+    label: "{{ _systemd_backup_jobs_job.name | default('<missing name>') }}"
+
+- name: "Validate job names are unique"
+  ansible.builtin.assert:
+    that:
+      - >-
+        systemd_backup_jobs_definitions | map(attribute='name') | list | length
+        == systemd_backup_jobs_definitions | map(attribute='name') | unique | list | length
+    fail_msg: >-
+      Job names must be unique. Current names:
+      {{ systemd_backup_jobs_definitions | map(attribute='name') | join(', ') }}.
+
+# systemd-analyze reports the same errors systemd would, so an invalid schedule fails here, not at runtime.
+- name: "Validate job schedules"
+  ansible.builtin.command:
+    argv:
+      - systemd-analyze
+      - calendar
+      - "{{ _systemd_backup_jobs_job.schedule }}"
+  changed_when: false
+  check_mode: false
+  loop: "{{ _systemd_backup_jobs_enabled_jobs }}"
+  loop_control:
+    loop_var: _systemd_backup_jobs_job
+    label: "{{ _systemd_backup_jobs_job.name }}: {{ _systemd_backup_jobs_job.schedule }}"
+
+- name: "Validate job randomized delays"
+  ansible.builtin.command:
+    argv:
+      - systemd-analyze
+      - timespan
+      - "{{ _systemd_backup_jobs_job.randomized_delay }}"
+  changed_when: false
+  check_mode: false
+  loop: "{{ _systemd_backup_jobs_enabled_jobs | selectattr('randomized_delay', 'defined') | list }}"
+  loop_control:
+    loop_var: _systemd_backup_jobs_job
+    label: "{{ _systemd_backup_jobs_job.name }}: {{ _systemd_backup_jobs_job.randomized_delay }}"
+
+- name: "Check Docker CLI availability"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - --version
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  register: _systemd_backup_jobs_docker_cli
+  when: _systemd_backup_jobs_enabled_jobs | selectattr('mode', 'equalto', 'docker') | list | length > 0
+
+- name: "Fail when docker jobs are defined without Docker"
+  ansible.builtin.fail:
+    msg: >-
+      Docker jobs are defined but the docker CLI is not available on this host.
+      Install Docker before applying this role; the role does not install it.
+  when:
+    - _systemd_backup_jobs_docker_cli is not skipped
+    - _systemd_backup_jobs_docker_cli.rc != 0

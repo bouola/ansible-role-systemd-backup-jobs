@@ -1,0 +1,60 @@
+---
+- name: "Find installed job timers"
+  ansible.builtin.find:
+    paths: "{{ systemd_backup_jobs_systemd_dir }}"
+    patterns: "systemd-backup-jobs@*.timer"
+  register: _systemd_backup_jobs_installed_timers
+
+# A job is stale when its timer is installed but the job is disabled or no longer defined.
+- name: "Build stale job list"
+  ansible.builtin.set_fact:
+    _systemd_backup_jobs_stale_jobs: >-
+      {{ _systemd_backup_jobs_installed_timers.files | map(attribute='path') | map('basename')
+      | map('regex_replace', '^systemd-backup-jobs@(.*)\.timer$', '\1')
+      | difference(_systemd_backup_jobs_enabled_jobs | map(attribute='name')) }}
+
+- name: "Stop and disable stale job timers"
+  ansible.builtin.systemd:
+    name: "systemd-backup-jobs@{{ _systemd_backup_jobs_stale_job }}.timer"
+    enabled: false
+    state: stopped
+  loop: "{{ _systemd_backup_jobs_stale_jobs }}"
+  loop_control:
+    loop_var: _systemd_backup_jobs_stale_job
+    label: "{{ _systemd_backup_jobs_stale_job }}"
+
+- name: "Remove stale job timers and definitions"
+  ansible.builtin.file:
+    path: "{{ _systemd_backup_jobs_stale_path }}"
+    state: absent
+  loop: >-
+    {{ _systemd_backup_jobs_stale_jobs | map('regex_replace', '^(.*)$',
+    systemd_backup_jobs_systemd_dir ~ '/systemd-backup-jobs@\1.timer') | list
+    + _systemd_backup_jobs_stale_jobs | map('regex_replace', '^(.*)$',
+    systemd_backup_jobs_config_dir ~ '/jobs/\1.json') | list }}
+  loop_control:
+    loop_var: _systemd_backup_jobs_stale_path
+    label: "{{ _systemd_backup_jobs_stale_path }}"
+  notify: "Reload systemd"
+
+- name: "Find published job outputs"
+  ansible.builtin.find:
+    paths: "{{ systemd_backup_jobs_output_dir }}"
+    file_type: directory
+    hidden: false
+  register: _systemd_backup_jobs_published_outputs
+  when: systemd_backup_jobs_prune_orphan_outputs
+
+# Outputs are removed only when explicitly requested: they may be the last copy of a backup.
+- name: "Remove outputs of undefined jobs"
+  ansible.builtin.file:
+    path: "{{ _systemd_backup_jobs_orphan_output }}"
+    state: absent
+  loop: >-
+    {{ _systemd_backup_jobs_published_outputs.files | map(attribute='path')
+    | reject('in', systemd_backup_jobs_definitions | map(attribute='name')
+    | map('regex_replace', '^(.*)$', systemd_backup_jobs_output_dir ~ '/\1') | list) | list }}
+  loop_control:
+    loop_var: _systemd_backup_jobs_orphan_output
+    label: "{{ _systemd_backup_jobs_orphan_output }}"
+  when: systemd_backup_jobs_prune_orphan_outputs
