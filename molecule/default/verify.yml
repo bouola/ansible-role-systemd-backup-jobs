@@ -7,8 +7,9 @@
       {{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY')
       | default(lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY')
       | dirname | dirname, true) }}/defaults/main.yml
+  # Not named systemd_backup_jobs_textfile_dir: vars_files (the role defaults) takes precedence over vars.
   vars:
-    systemd_backup_jobs_textfile_dir: "/var/lib/node_exporter/textfile_collector"
+    _systemd_backup_jobs_expected_textfile_dir: "/var/lib/node_exporter/textfile_collector"
   tasks:
     - name: "Collect enabled job timer states"
       ansible.builtin.systemd:
@@ -144,7 +145,7 @@
 
     - name: "Read host-copy metrics"
       ansible.builtin.slurp:
-        src: "{{ systemd_backup_jobs_textfile_dir }}/systemd_backup_job_host-copy.prom"
+        src: "{{ _systemd_backup_jobs_expected_textfile_dir }}/systemd_backup_job_host-copy.prom"
       register: _systemd_backup_jobs_host_copy_metrics
 
     - name: "Assert host-copy metrics report a success"
@@ -190,7 +191,7 @@
 
     - name: "Read host-flaky metrics"
       ansible.builtin.slurp:
-        src: "{{ systemd_backup_jobs_textfile_dir }}/systemd_backup_job_host-flaky.prom"
+        src: "{{ _systemd_backup_jobs_expected_textfile_dir }}/systemd_backup_job_host-flaky.prom"
       register: _systemd_backup_jobs_flaky_metrics
 
     - name: "Assert a failed run keeps the previous output and reports the failure"
