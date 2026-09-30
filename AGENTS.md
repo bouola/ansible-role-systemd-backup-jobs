@@ -75,6 +75,8 @@ After changing `molecule.yml`, run `molecule destroy` first: an existing contain
 - README examples must match the implemented contract and use the FQCN `bouola.systemd_backup_jobs`.
 - Remove documentation for deleted variables and behavior.
 - Commits follow Conventional Commits; semantic-release derives the version from them.
+- The GitHub repository is `bouola/ansible-role-systemd_backup_jobs`, with underscores. Galaxy derives the role name
+  from the repository name, not from `meta/main.yml`: a repository with dashes publishes `bouola.systemd-backup-jobs`.
 
 ## When to ask the user
 

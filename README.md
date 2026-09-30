@@ -1,8 +1,8 @@
 # Ansible role - systemd_backup_jobs
 [![Maintainer](https://img.shields.io/badge/maintained%20by-bouola-e00000?style=flat-square)](https://github.com/bouola)
-[![License](https://img.shields.io/github/license/bouola/ansible-role-systemd-backup-jobs?style=flat-square)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/bouola/ansible-role-systemd-backup-jobs?style=flat-square)](https://github.com/bouola/ansible-role-systemd-backup-jobs/releases)
-[![Status](https://img.shields.io/github/actions/workflow/status/bouola/ansible-role-systemd-backup-jobs/ci.yml?style=flat-square&label=tests&branch=main)](https://github.com/bouola/ansible-role-systemd-backup-jobs/actions?query=workflow%3A%22CI%22)
+[![License](https://img.shields.io/github/license/bouola/ansible-role-systemd_backup_jobs?style=flat-square)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/bouola/ansible-role-systemd_backup_jobs?style=flat-square)](https://github.com/bouola/ansible-role-systemd_backup_jobs/releases)
+[![Status](https://img.shields.io/github/actions/workflow/status/bouola/ansible-role-systemd_backup_jobs/ci.yml?style=flat-square&label=tests&branch=main)](https://github.com/bouola/ansible-role-systemd_backup_jobs/actions?query=workflow%3A%22CI%22)
 [![Ansible version](https://img.shields.io/badge/ansible-%3E%3D2.15-black.svg?style=flat-square&logo=ansible)](https://github.com/ansible/ansible)
 [![Ansible Galaxy](https://img.shields.io/badge/ansible-galaxy-black.svg?style=flat-square&logo=ansible)](https://galaxy.ansible.com/bouola/systemd_backup_jobs)
 
