@@ -119,3 +119,6 @@ venv.bak/
 
 # Local Codex metadata
 .codex
+
+# Ignore idea files
+.idea/
