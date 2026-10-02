@@ -1,3 +1,14 @@
+# [2.0.0](https://github.com/bouola/ansible-role-systemd_backup_jobs/compare/v1.0.0...v2.0.0) (2026-10-02)
+
+
+* feat!: label backup metrics with backup_job and remove metrics of inactive jobs ([16a66c8](https://github.com/bouola/ansible-role-systemd_backup_jobs/commit/16a66c87c4e4b173e2a8971f0b866ad937b11473))
+
+
+### BREAKING CHANGES
+
+* metrics use the backup_job label instead of job. Prometheus renamed
+the former job label to exported_job; update queries, alerts and dashboards.
+
 # 1.0.0 (2026-09-30)
 
 
