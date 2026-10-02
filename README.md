@@ -134,11 +134,21 @@ Written to `<textfile_dir>/systemd_backup_job_<name>.prom` when `systemd_backup_
 
 | Metric | Description |
 | --- | --- |
-| `systemd_backup_job_last_run_timestamp_seconds{job}` | Start time of the last run. |
-| `systemd_backup_job_last_status{job}` | `1` when the last run succeeded, `0` otherwise. |
-| `systemd_backup_job_last_duration_seconds{job}` | Duration of the last run. |
-| `systemd_backup_job_last_success_timestamp_seconds{job}` | Start time of the last successful run. Kept after a failure. |
-| `systemd_backup_job_last_size_bytes{job}` | Size of the last published output. |
+| `systemd_backup_job_last_run_timestamp_seconds{backup_job}` | Start time of the last run. |
+| `systemd_backup_job_last_status{backup_job}` | `1` when the last run succeeded, `0` otherwise. |
+| `systemd_backup_job_last_duration_seconds{backup_job}` | Duration of the last run. |
+| `systemd_backup_job_last_success_timestamp_seconds{backup_job}` | Start time of the last successful run. Kept after a failure. |
+| `systemd_backup_job_last_size_bytes{backup_job}` | Size of the last published output. |
+
+The `backup_job` label holds the job name. It is not called `job` because Prometheus sets `job` to the scrape job and
+would rename a `job` label coming from the target to `exported_job`. The host is in the `instance` label added by
+Prometheus.
+
+`last_success_timestamp_seconds` and `last_size_bytes` appear after the first successful run. A job that has never
+succeeded only reports `last_status 0`, so alert on both.
+
+The role removes the metric files of disabled and undefined jobs, so that their last values do not stay frozen and
+keep a staleness alert firing. Other files in the textfile directory are left unchanged.
 
 node-exporter must be started with `--collector.textfile.directory=<textfile_dir>`. Example alerts:
 
@@ -231,7 +241,7 @@ and reported like any other job.
 
 | Scenario | Coverage |
 | --- | --- |
-| `default` | `host` jobs: timers, schedules, published output and permissions, output group access, manifest, metrics, failed run keeping the previous output, empty output rejected, `verify` detecting a modified file, removal of disabled and stale timers. |
+| `default` | `host` jobs: timers, schedules, published output and permissions, output group access, manifest, metrics, failed run keeping the previous output, empty output rejected, `verify` detecting a modified file, removal of disabled and stale timers, and of their metric files only. |
 | `docker` | `docker` jobs: network attachment, named volumes, exec-form commands, `env_file`, missing network, container cleanup. |
 
 ```bash

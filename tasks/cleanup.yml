@@ -37,6 +37,28 @@
     label: "{{ _systemd_backup_jobs_stale_path }}"
   notify: "Reload systemd"
 
+- name: "Find job metric files"
+  ansible.builtin.find:
+    paths: "{{ systemd_backup_jobs_textfile_dir }}"
+    patterns: "systemd_backup_job_*.prom"
+  register: _systemd_backup_jobs_metric_files
+  when: systemd_backup_jobs_textfile_dir | length > 0
+
+# Metrics of a disabled or undefined job would otherwise stay frozen, and a staleness alert would never resolve.
+# Match on the file name, not the full path: a trailing slash in textfile_dir must not remove enabled job metrics.
+- name: "Remove metrics of disabled and undefined jobs"
+  ansible.builtin.file:
+    path: "{{ _systemd_backup_jobs_stale_metric_file.path }}"
+    state: absent
+  loop: >-
+    {{ _systemd_backup_jobs_metric_files.files
+    | rejectattr('path', 'search', '/systemd_backup_job_(' ~ (_systemd_backup_jobs_enabled_jobs
+    | map(attribute='name') | list + ['']) | join('|') ~ ')[.]prom$') | list }}
+  loop_control:
+    loop_var: _systemd_backup_jobs_stale_metric_file
+    label: "{{ _systemd_backup_jobs_stale_metric_file.path }}"
+  when: systemd_backup_jobs_textfile_dir | length > 0
+
 - name: "Find published job outputs"
   ansible.builtin.find:
     paths: "{{ systemd_backup_jobs_output_dir }}"

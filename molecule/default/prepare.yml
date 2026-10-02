@@ -16,6 +16,30 @@
         group: "root"
         mode: "0600"
 
+    - name: "Create textfile collector directory"
+      ansible.builtin.file:
+        path: "/var/lib/node_exporter/textfile_collector"
+        state: directory
+        owner: "root"
+        group: "root"
+        mode: "0755"
+
+    # Metrics of a job that no longer exists or is disabled must be removed by the role; other files must stay.
+    - name: "Create stale and foreign metric files"
+      ansible.builtin.copy:
+        dest: "/var/lib/node_exporter/textfile_collector/{{ _systemd_backup_jobs_metric_file }}"
+        content: "# molecule\n"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+      loop:
+        - "systemd_backup_job_legacy.prom"
+        - "systemd_backup_job_host-disabled.prom"
+        - "other_collector.prom"
+      loop_control:
+        loop_var: _systemd_backup_jobs_metric_file
+        label: "{{ _systemd_backup_jobs_metric_file }}"
+
     # A leftover timer from a job that no longer exists must be removed by the role.
     - name: "Create stale job timer"
       ansible.builtin.copy:

@@ -55,6 +55,27 @@
         loop_var: _systemd_backup_jobs_absent_timer
         label: "{{ _systemd_backup_jobs_absent_timer._systemd_backup_jobs_timer }}"
 
+    - name: "Collect metric files of disabled, undefined and foreign jobs"
+      ansible.builtin.stat:
+        path: "{{ _systemd_backup_jobs_expected_textfile_dir }}/{{ _systemd_backup_jobs_metric_file }}"
+      loop:
+        - "systemd_backup_job_legacy.prom"
+        - "systemd_backup_job_host-disabled.prom"
+        - "other_collector.prom"
+      loop_control:
+        loop_var: _systemd_backup_jobs_metric_file
+      register: _systemd_backup_jobs_metric_files
+
+    - name: "Assert only the backup metrics of disabled and undefined jobs are removed"
+      ansible.builtin.assert:
+        that:
+          - not _systemd_backup_jobs_metric_files.results[0].stat.exists
+          - not _systemd_backup_jobs_metric_files.results[1].stat.exists
+          - _systemd_backup_jobs_metric_files.results[2].stat.exists
+        fail_msg: >-
+          The metric files of the legacy and host-disabled jobs must be removed,
+          and other_collector.prom, which the role does not own, must be kept.
+
     - name: "Read host-copy timer"
       ansible.builtin.slurp:
         src: "/etc/systemd/system/systemd-backup-jobs@host-copy.timer"
@@ -151,8 +172,8 @@
     - name: "Assert host-copy metrics report a success"
       ansible.builtin.assert:
         that:
-          - "'systemd_backup_job_last_status{job=\"host-copy\"} 1' in _systemd_backup_jobs_host_copy_metrics.content | b64decode"
-          - "'systemd_backup_job_last_success_timestamp_seconds{job=\"host-copy\"}' in _systemd_backup_jobs_host_copy_metrics.content | b64decode"
+          - "'systemd_backup_job_last_status{backup_job=\"host-copy\"} 1' in _systemd_backup_jobs_host_copy_metrics.content | b64decode"
+          - "'systemd_backup_job_last_success_timestamp_seconds{backup_job=\"host-copy\"}' in _systemd_backup_jobs_host_copy_metrics.content | b64decode"
         fail_msg: "host-copy metrics do not report a successful run."
 
     # Remove the failure trigger left by an earlier verify run, so the first run succeeds.
@@ -200,8 +221,8 @@
           - _systemd_backup_jobs_flaky_run.rc != 0
           - _systemd_backup_jobs_flaky_output.stat.exists
           - not _systemd_backup_jobs_flaky_tmp.stat.exists
-          - "'systemd_backup_job_last_status{job=\"host-flaky\"} 0' in _systemd_backup_jobs_flaky_metrics.content | b64decode"
-          - "'systemd_backup_job_last_success_timestamp_seconds{job=\"host-flaky\"}' in _systemd_backup_jobs_flaky_metrics.content | b64decode"
+          - "'systemd_backup_job_last_status{backup_job=\"host-flaky\"} 0' in _systemd_backup_jobs_flaky_metrics.content | b64decode"
+          - "'systemd_backup_job_last_success_timestamp_seconds{backup_job=\"host-flaky\"}' in _systemd_backup_jobs_flaky_metrics.content | b64decode"
         fail_msg: >-
           A failed host-flaky run must exit non-zero, keep the previous output, remove its temporary
           directory, report status 0, and keep the last success timestamp.
