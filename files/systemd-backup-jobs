@@ -230,7 +230,8 @@ def write_state_and_metrics(config, job_name, success, duration, size, started_a
     textfile_dir = config.get("textfile_dir")
     if not textfile_dir:
         return
-    label = f'job="{job_name}"'
+    # Not "job": Prometheus sets "job" to the scrape job and would rename this label to "exported_job".
+    label = f'backup_job="{job_name}"'
     lines = [
         "# HELP systemd_backup_job_last_run_timestamp_seconds Start time of the last run.",
         "# TYPE systemd_backup_job_last_run_timestamp_seconds gauge",
